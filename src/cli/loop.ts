@@ -1,6 +1,7 @@
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { coreAgent } from "../mastra/agents/core";
+import { Envs } from "../util/env";
 import { handlingStreamResult } from "./helper";
 
 type Role = "user" | "assistant";
@@ -23,7 +24,9 @@ export async function runAgentLoop(): Promise<void> {
 
 			try {
 				history.push({ role: "user", content: query });
-				const result = await coreAgent.stream(history);
+				const result = await coreAgent.stream(history, {
+					maxSteps: Envs.CLI_MAX_STEPS,
+				});
 				const assistantText = await handlingStreamResult(result);
 				history.push({ role: "assistant", content: assistantText || "" });
 				console.log();

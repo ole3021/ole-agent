@@ -8,6 +8,7 @@ const envSchema = z.object({
 	CLI_REASON: z.stringbool().default(false),
 	CLI_TOOL_CALL: z.stringbool().default(false),
 	CLI_USAGE: z.stringbool().default(false),
+	CLI_MAX_STEPS: z.coerce.number().int().positive().default(30),
 });
 
 const parsed = envSchema.safeParse(process.env);

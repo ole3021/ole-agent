@@ -9,20 +9,25 @@ export const handlingStreamResult = async (
 	const reasoningIds = new Set<string>();
 	let assistantText = "";
 	let outputMode: "none" | "meta" | "text" = "none";
+	let hasOpenMetaLine = false;
+	let hasTextOutput = false;
 	const cyan = "\u001B[36m";
 	const reset = "\u001B[0m";
 
 	const startMetaLine = (prefix: string): void => {
 		if (outputMode === "text") {
 			process.stdout.write("\n");
+			hasTextOutput = false;
 		}
 		process.stdout.write(`${cyan}${prefix}`);
 		outputMode = "meta";
+		hasOpenMetaLine = true;
 	};
 
 	const endMetaLine = (): void => {
 		process.stdout.write(`${reset}\n`);
 		outputMode = "none";
+		hasOpenMetaLine = false;
 	};
 
 	const writeText = (text: string): void => {
@@ -34,6 +39,7 @@ export const handlingStreamResult = async (
 			outputMode = "text";
 		}
 		process.stdout.write(text);
+		hasTextOutput = true;
 	};
 
 	while (true) {
@@ -68,6 +74,16 @@ export const handlingStreamResult = async (
 					endMetaLine();
 				}
 				break;
+			case "tool-error":
+				startMetaLine(
+					` :E: Tool Error: ${value.payload.toolName} >> ${String(value.payload.error)} `,
+				);
+				endMetaLine();
+				break;
+			case "error":
+				startMetaLine(` :E: Stream Error: ${String(value.payload.error)} `);
+				endMetaLine();
+				break;
 			case "text-delta":
 				writeText(value.payload.text);
 				assistantText += value.payload.text;
@@ -77,14 +93,31 @@ export const handlingStreamResult = async (
 		}
 	}
 
-	// Ensure streamed line is terminated cleanly before usage/footer output.
-	process.stdout.write("\n");
+	if (hasOpenMetaLine) {
+		endMetaLine();
+	}
+	if (hasTextOutput) {
+		process.stdout.write("\n");
+		hasTextOutput = false;
+	}
+
+	const [finalText, finishReason] = await Promise.all([
+		streamResult.text,
+		streamResult.finishReason,
+	]);
+	if (assistantText.length === 0 && finalText) {
+		writeText(finalText);
+		assistantText = finalText;
+		process.stdout.write("\n");
+		hasTextOutput = false;
+	}
 
 	if (Envs.CLI_USAGE) {
 		const [usage] = await Promise.all([streamResult.usage]);
 		console.log(
 			`\u001B[36m :: usage in=${usage.inputTokens} out=${usage.outputTokens} tot=${usage.totalTokens}`,
 		);
+		console.log(`\u001B[36m :: finish=${finishReason ?? "unknown"}`);
 	}
 
 	console.log();
