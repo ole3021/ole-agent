@@ -1,12 +1,27 @@
 {
-  "name": "ole-agent",
-  "module": "index.ts",
-  "type": "module",
-  "private": true,
-  "devDependencies": {
-    "@types/bun": "latest"
-  },
-  "peerDependencies": {
-    "typescript": "^5"
-  }
+	"name": "ole-agent",
+	"module": "index.ts",
+	"type": "module",
+	"private": true,
+	"scripts": {
+		"format": "bunx biome check --write",
+		"cli": "bun run src/cli/index.ts",
+		"dev": "mastra dev",
+		"build": "mastra build"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.4.12",
+		"@types/bun": "^1.3.12",
+		"@types/node": "^25.6.0",
+		"mastra": "^1.6.0"
+	},
+	"peerDependencies": {
+		"typescript": "^6.0.3"
+	},
+	"dependencies": {
+		"@mastra/core": "^1.25.0",
+		"pino": "^10.3.1",
+		"pino-pretty": "^13.1.3",
+		"zod": "^4"
+	}
 }
