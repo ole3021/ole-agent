@@ -2,21 +2,22 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
-import {
-	isWorkspaceRootValid,
-	workspaceRoot,
-} from "../../config/workspace-root";
+import { workspaceRoot } from "../../config/workspace-root";
 
 const runShell = promisify(exec);
 const COMMAND_TIMEOUT_MS = 120_000;
 const OUTPUT_LIMIT = 50_000;
-const DANGEROUS_FRAGMENTS = [
-	"rm -rf /",
-	"sudo",
-	"shutdown",
-	"reboot",
-	"> /dev/",
-];
+
+const DANGEROUS_TOKENS = new Set(["sudo", "shutdown", "reboot", "halt"]);
+const DANGEROUS_SUBSTRINGS = ["rm -rf /", "> /dev/", ":(){:|:&};:"];
+
+const isDangerous = (command: string): boolean => {
+	if (DANGEROUS_SUBSTRINGS.some((s) => command.includes(s))) {
+		return true;
+	}
+	const tokens = command.split(/[\s;&|()`]+/).filter(Boolean);
+	return tokens.some((t) => DANGEROUS_TOKENS.has(t));
+};
 
 export const bashTool = createTool({
 	id: "bash",
@@ -28,13 +29,8 @@ export const bashTool = createTool({
 		output: z.string(),
 	}),
 	execute: async ({ command }: { command: string }) => {
-		if (DANGEROUS_FRAGMENTS.some((fragment) => command.includes(fragment))) {
+		if (isDangerous(command)) {
 			return { output: "Error: Dangerous command blocked" };
-		}
-		if (!isWorkspaceRootValid()) {
-			return {
-				output: `Error: Workspace root does not exist: ${workspaceRoot}`,
-			};
 		}
 
 		try {
@@ -57,8 +53,13 @@ export const bashTool = createTool({
 				signal?: string;
 			};
 
-			if (commandError.killed && commandError.signal === "SIGTERM") {
-				return { output: "Error: Timeout (120s)" };
+			const isTimeout =
+				commandError.code === "ETIMEDOUT" ||
+				(commandError.killed && commandError.signal === "SIGTERM");
+			if (isTimeout) {
+				return {
+					output: `Error: Timeout (${Math.round(COMMAND_TIMEOUT_MS / 1000)}s)`,
+				};
 			}
 
 			const combinedOutput =

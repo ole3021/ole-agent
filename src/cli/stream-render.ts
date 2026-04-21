@@ -1,42 +1,51 @@
 import type { MastraModelOutput } from "@mastra/core/stream";
 import { Envs } from "../util/env";
+import { color, tag } from "./style";
 
-export const handlingStreamResult = async (
-	result: unknown,
+export const formatTokens = (n: number | undefined): string => {
+	if (n === undefined || !Number.isFinite(n)) {
+		return "-";
+	}
+	if (n >= 1_000_000) {
+		return `${(n / 1_000_000).toFixed(1)}M`;
+	}
+	if (n >= 1_000) {
+		return `${(n / 1_000).toFixed(1)}K`;
+	}
+	return String(n);
+};
+
+export const renderStream = async (
+	stream: MastraModelOutput<unknown>,
 ): Promise<string> => {
-	const streamResult = result as MastraModelOutput<unknown>;
-	const reader = streamResult.fullStream.getReader();
+	const reader = stream.fullStream.getReader();
 	const reasoningIds = new Set<string>();
 	let assistantText = "";
-	let outputMode: "none" | "meta" | "text" = "none";
 	let hasOpenMetaLine = false;
 	let hasTextOutput = false;
-	const cyan = "\u001B[36m";
-	const reset = "\u001B[0m";
 
 	const startMetaLine = (prefix: string): void => {
-		if (outputMode === "text") {
+		if (hasTextOutput) {
 			process.stdout.write("\n");
 			hasTextOutput = false;
 		}
-		process.stdout.write(`${cyan}${prefix}`);
-		outputMode = "meta";
+		process.stdout.write(`${color.cyan}${prefix}`);
 		hasOpenMetaLine = true;
 	};
 
 	const endMetaLine = (): void => {
-		process.stdout.write(`${reset}\n`);
-		outputMode = "none";
+		process.stdout.write(`${color.reset}\n`);
 		hasOpenMetaLine = false;
 	};
 
+	const printMeta = (prefix: string, body: string): void => {
+		startMetaLine(`${prefix}${body}`);
+		endMetaLine();
+	};
+
 	const writeText = (text: string): void => {
-		if (outputMode === "meta") {
+		if (hasOpenMetaLine) {
 			endMetaLine();
-		}
-		if (outputMode !== "text") {
-			process.stdout.write(reset);
-			outputMode = "text";
 		}
 		process.stdout.write(text);
 		hasTextOutput = true;
@@ -52,7 +61,7 @@ export const handlingStreamResult = async (
 			case "reasoning-start":
 				if (Envs.CLI_REASON) {
 					reasoningIds.add(value.payload.id);
-					startMetaLine(" :R: ");
+					startMetaLine(tag.reason);
 				}
 				break;
 			case "reasoning-delta":
@@ -68,21 +77,25 @@ export const handlingStreamResult = async (
 				break;
 			case "tool-call":
 				if (Envs.CLI_TOOL_CALL) {
-					startMetaLine(
-						` :T: Call Tool: ${value.payload.toolName} >> ${JSON.stringify(value.payload.args)} `,
+					printMeta(
+						tag.tool,
+						`call: ${value.payload.toolName} >> ${JSON.stringify(value.payload.args)} `,
 					);
-					endMetaLine();
+				}
+				break;
+			case "tool-result":
+				if (Envs.CLI_TOOL_CALL) {
+					printMeta(tag.tool, `result: ${value.payload.toolName} `);
 				}
 				break;
 			case "tool-error":
-				startMetaLine(
-					` :E: Tool Error: ${value.payload.toolName} >> ${String(value.payload.error)} `,
+				printMeta(
+					tag.error,
+					`tool: ${value.payload.toolName} >> ${String(value.payload.error)} `,
 				);
-				endMetaLine();
 				break;
 			case "error":
-				startMetaLine(` :E: Stream Error: ${String(value.payload.error)} `);
-				endMetaLine();
+				printMeta(tag.error, `stream: ${String(value.payload.error)} `);
 				break;
 			case "text-delta":
 				writeText(value.payload.text);
@@ -102,8 +115,8 @@ export const handlingStreamResult = async (
 	}
 
 	const [finalText, finishReason] = await Promise.all([
-		streamResult.text,
-		streamResult.finishReason,
+		stream.text,
+		stream.finishReason,
 	]);
 	if (assistantText.length === 0 && finalText) {
 		writeText(finalText);
@@ -113,15 +126,12 @@ export const handlingStreamResult = async (
 	}
 
 	if (Envs.CLI_USAGE) {
-		const [usage] = await Promise.all([streamResult.usage]);
+		console.log();
+		const usage = await stream.usage;
 		console.log(
-			`\u001B[36m :: usage in=${usage.inputTokens} out=${usage.outputTokens} tot=${usage.totalTokens}`,
+			`${color.cyan}${tag.stat}usage in=${formatTokens(usage.inputTokens)} out=${formatTokens(usage.outputTokens)} tot=${formatTokens(usage.totalTokens)}`,
 		);
-		console.log(`\u001B[36m :: finish=${finishReason ?? "unknown"}`);
 	}
-
-	console.log();
-	console.log(reset);
 
 	if (assistantText.length === 0) {
 		console.log("[No response]");
