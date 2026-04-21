@@ -114,10 +114,7 @@ export const renderStream = async (
 		hasTextOutput = false;
 	}
 
-	const [finalText, finishReason] = await Promise.all([
-		stream.text,
-		stream.finishReason,
-	]);
+	const [finalText] = await Promise.all([stream.text, stream.finishReason]);
 	if (assistantText.length === 0 && finalText) {
 		writeText(finalText);
 		assistantText = finalText;
