@@ -33,7 +33,6 @@ export async function runAgentLoop(): Promise<void> {
 			try {
 				history.push({ role: "user", content: query });
 				const result = await coreAgent.stream(history, {
-					maxSteps: Envs.CLI_MAX_STEPS,
 					abortSignal: ctrl.signal,
 					onStepFinish: (step) => {
 						if (!Envs.CLI_DEBUG_STEP) {
