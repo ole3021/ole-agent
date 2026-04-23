@@ -5,6 +5,7 @@ export const color = {
 	blue: "\u001B[34m",
 	green: "\u001B[32m",
 	greenBold: "\u001B[1;32m",
+	yellow: "\u001B[33m",
 	promptPrefix: "\u001B[34m >> \u001B[0m",
 } as const;
 
@@ -14,4 +15,5 @@ export const tag = {
 	error: " :E: ",
 	stat: " :: ",
 	step: " [LLM] ",
+	sub: " :S: ",
 } as const;

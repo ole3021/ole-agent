@@ -141,3 +141,5 @@ vite.config.ts.timestamp-*
 
 # Mastra
 .mastra
+mastra.db
+mastra.db-*
