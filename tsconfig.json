@@ -4,6 +4,7 @@
 		"module": "ES2022",
 		"moduleResolution": "bundler",
 		"esModuleInterop": true,
+		"jsx": "react-jsx",
 		"types": ["node"],
 		"forceConsistentCasingInFileNames": true,
 		"strict": true,

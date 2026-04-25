@@ -23,7 +23,7 @@ export const STEP_ZERO_PRIME =
 
 const STATUS_MARKERS: Record<PlanStatus, string> = {
 	pending: "[ ]",
-	in_progress: "[ ]", // TODO: Optimize the in_progress handling 
+	in_progress: "[ ]", // TODO: Optimize the in_progress handling
 	completed: "[x]",
 };
 
