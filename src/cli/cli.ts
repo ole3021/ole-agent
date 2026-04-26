@@ -1,4 +1,3 @@
-
 import { isWorkspaceRootValid, workspaceRoot } from "../config/workspace-root";
 import { runAgentLoop } from "./loop";
 
