@@ -1,6 +1,7 @@
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { coreAgent } from "../mastra/agents/core";
+import { ensureOleAgentWorkspaceReady } from "../mastra/index";
 import { Envs } from "../util/env";
 import { formatTokens, renderStream } from "./stream-render";
 import { color, tag } from "./style";
@@ -31,6 +32,7 @@ export async function runAgentLoop(): Promise<void> {
 			process.once("SIGINT", onSigint);
 
 			try {
+				await ensureOleAgentWorkspaceReady();
 				history.push({ role: "user", content: query });
 				const result = await coreAgent.stream(history, {
 					abortSignal: ctrl.signal,

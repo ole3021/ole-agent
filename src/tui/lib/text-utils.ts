@@ -221,6 +221,15 @@ export const getBlockTranscriptLines = (
 				fg: tuiColors.muted,
 			}));
 		}
+		case "system": {
+			const rows: TranscriptLine[] = [];
+			if (block.text) {
+				for (const L of linesWithLBracketPrefix("⎿ 启动: ", block.text, w)) {
+					rows.push({ text: L, fg: thinking });
+				}
+			}
+			return rows;
+		}
 		default:
 			return [{ text: "?", fg: tuiColors.foreground }];
 	}

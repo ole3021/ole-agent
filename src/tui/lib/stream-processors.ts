@@ -1,3 +1,7 @@
+import {
+	formatSkillToolCallSummary,
+	isMastraSkillTool,
+} from "../../util/skill-log-format";
 import type {
 	AgentTodoItem,
 	AgentTodoStatus,
@@ -180,7 +184,9 @@ export const applyEvent = (
 				type: "tool",
 				scope: event.scope,
 				toolName: event.name,
-				args: stringifySafe(event.args),
+				args: isMastraSkillTool(event.name)
+					? formatSkillToolCallSummary(event.name, event.args)
+					: stringifySafe(event.args),
 				status: "running",
 			};
 			return [...blocks, newBlock];

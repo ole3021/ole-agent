@@ -70,7 +70,8 @@ export type TranscriptBlock =
 			error?: string;
 	  }
 	| { id: string; type: "error"; message: string }
-	| { id: string; type: "usage"; input: string; output: string; total: string };
+	| { id: string; type: "usage"; input: string; output: string; total: string }
+	| { id: string; type: "system"; text: string };
 
 export type UsageState = {
 	input: number;

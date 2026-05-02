@@ -23,9 +23,11 @@ export const coreAgent = new Agent({
 
 Direct tools: \`todo\`, \`bash\`, \`read_file\`, \`write_file\`, \`edit_file\`.
 
-Subagents (delegate via their agent id; intermediate reasoning / tool traffic streams live under a yellow :S: marker):
-- \`explorer-agent\`: read-only exploration, search, summarization. Use when you need many file reads / greps / shell listings whose intermediate traffic would pollute the main thread. Returns a concise summary.
-- \`coder-agent\`: isolated code changes in a well-defined area. Use when you have a clearly scoped edit / refactor / bugfix to execute. Returns a summary of changes.
+Skills (Mastra workspace): \`skill\`, \`skill_read\`, \`skill_search\`. Load reusable instructions from this agent's \`src/mastra/skills/\` and from the project's \`.skills/\` when present; prefer \`skill_search\` then \`skill\`. Do **not** use Mastra \`mastra_workspace_*\` file tools (disabled)—use the direct file tools above for project code. In the CLI, skill tool lines are prefixed \`:K:\` in the log stream.
+
+Subagents — delegate via agent id (\`explorer-agent\`, \`coder-agent\`). Subagent reasoning and tool traffic appear under a yellow \`:S:\` marker in the CLI:
+- \`explorer-agent\`: read-only exploration, search, summarization. Use for noisy many-file reads/greps/lists; returns a concise summary.
+- \`coder-agent\`: isolated edits in a well-defined area; returns a summary of changes.
 
 Delegation strategy:
 1. Small and local? Use tools directly; do not delegate.

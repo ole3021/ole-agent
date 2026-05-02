@@ -3,12 +3,25 @@ import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import { createElement } from "react";
 import { isWorkspaceRootValid, workspaceRoot } from "../config/workspace-root";
+import { logStartupSkillsLines } from "../mastra/index";
 import { TuiApp } from "./app/TuiApp";
+import { useTuiStore } from "./store/tui-store";
 
 if (!isWorkspaceRootValid()) {
 	console.error(`Workspace root does not exist: ${workspaceRoot}`);
 	process.exit(1);
 }
+
+const startupSkillText = (await logStartupSkillsLines()).join("\n");
+useTuiStore.setState({
+	blocks: [
+		{
+			id: "startup-skills",
+			type: "system",
+			text: startupSkillText,
+		},
+	],
+});
 
 const renderer = await createCliRenderer({
 	exitOnCtrlC: false, // 由 `useTuiKeyboard` 处理（流式时中止，否则退出）

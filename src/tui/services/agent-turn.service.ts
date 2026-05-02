@@ -1,4 +1,5 @@
 import { coreAgent } from "../../mastra/agents/core";
+import { ensureOleAgentWorkspaceReady } from "../../mastra/index";
 import { streamToEvents } from "../lib/stream-bridge";
 import {
 	applyEvent,
@@ -66,6 +67,7 @@ export const runAgentTurn = async (params: {
 	let assistantText = "";
 
 	try {
+		await ensureOleAgentWorkspaceReady();
 		const stream = await coreAgent.stream(history, {
 			abortSignal: signal,
 		});

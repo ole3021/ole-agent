@@ -1,4 +1,8 @@
 import type { MastraModelOutput } from "@mastra/core/stream";
+import {
+	formatSkillToolResultPreview,
+	isMastraSkillTool,
+} from "../../util/skill-log-format";
 import type { Scope, StreamToggles, UiEvent } from "../store/types";
 import { previewTextFromUnknown } from "./text-utils";
 
@@ -86,8 +90,12 @@ export async function* streamToEvents(
 					| { toolName?: string; args?: unknown; toolCallId?: string }
 					| undefined;
 				const toolName = String(payload?.toolName ?? "?");
-				/** `todo` 需始终经流，供侧栏与待办归约；其它工具受 `toggles.toolCall` 控制 */
-				if (!toggles.toolCall && toolName !== "todo") {
+				/** `todo` 与 Mastra `skill*` 需始终经流（待办归约 / skill 摘要展示）；其它工具受 `toggles.toolCall` 控制 */
+				if (
+					!toggles.toolCall &&
+					toolName !== "todo" &&
+					!isMastraSkillTool(toolName)
+				) {
 					break;
 				}
 				yield {
@@ -100,23 +108,27 @@ export async function* streamToEvents(
 				break;
 			}
 			case "tool-result": {
-				if (!toggles.toolCall) {
-					break;
-				}
 				const payload = chunk.payload as
 					| { toolName?: string; toolCallId?: string; result?: unknown }
 					| undefined;
+				const toolName = String(payload?.toolName ?? "?");
+				if (!toggles.toolCall && !isMastraSkillTool(toolName)) {
+					break;
+				}
 				const res = payload?.result;
+				const preview =
+					res !== undefined && res !== null
+						? isMastraSkillTool(toolName)
+							? formatSkillToolResultPreview(toolName, res)
+							: previewTextFromUnknown(res)
+						: undefined;
 				yield {
 					kind: "tool-result",
 					scope,
 					id: String(payload?.toolCallId ?? payload?.toolName ?? ""),
-					name: String(payload?.toolName ?? "?"),
+					name: toolName,
 					ok: true,
-					preview:
-						res !== undefined && res !== null
-							? previewTextFromUnknown(res)
-							: undefined,
+					preview,
 				};
 				break;
 			}
@@ -124,12 +136,13 @@ export async function* streamToEvents(
 				const payload = chunk.payload as
 					| { toolName?: string; toolCallId?: string; error?: unknown }
 					| undefined;
-				if (toggles.toolCall) {
+				const tn = String(payload?.toolName ?? "?");
+				if (toggles.toolCall || isMastraSkillTool(tn)) {
 					yield {
 						kind: "tool-result",
 						scope,
 						id: String(payload?.toolCallId ?? payload?.toolName ?? ""),
-						name: String(payload?.toolName ?? "?"),
+						name: tn,
 						ok: false,
 						preview: previewTextFromUnknown(
 							payload?.error ?? "Unknown tool error",

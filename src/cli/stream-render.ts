@@ -1,5 +1,10 @@
 import type { MastraModelOutput } from "@mastra/core/stream";
 import { Envs } from "../util/env";
+import {
+	formatSkillToolCallSummary,
+	formatSkillToolResultPreview,
+	isMastraSkillTool,
+} from "../util/skill-log-format";
 import { color, tag } from "./style";
 
 export const formatTokens = (n: number | undefined): string => {
@@ -15,60 +20,216 @@ export const formatTokens = (n: number | undefined): string => {
 	return String(n);
 };
 
-type FullStreamChunk = {
-	type: string;
-	payload?: unknown;
+type FullStreamChunk = { type: string; payload?: unknown };
+
+type ToolCallPayload = { toolName?: string; args?: unknown };
+type ToolResultPayload = { toolName?: string; result?: unknown };
+type ToolErrorPayload = { toolName?: string; error?: unknown };
+type ReasoningPayload = { id?: string; text?: string };
+
+type EnvelopePayload = {
+	toolName?: string;
+	toolCallId?: string;
+	output?: FullStreamChunk;
 };
 
-// Mastra's supervisor delegation wraps every sub-agent `fullStream` chunk as
-// `{ type: "tool-output", payload: { output: <inner chunk>, toolName, toolCallId } }`
-// when forwarding to the parent stream (see `@mastra/core` ToolStream._write).
-// When we see one of those with `toolName` starting with this prefix, we
-// unwrap `payload.output` and render it under a yellow sub-agent marker.
-const SUBAGENT_TOOL_PREFIX = "agent-";
+/** Mastra 将子代理块包在 `tool-output` 里；`toolName` 形如 `agent-<id>` */
+const SUBAGENT_TOOL_PREFIX = "agent-" as const;
 
-/** Drains a Mastra `fullStream` to stdout and returns the supervisor's final text. */
-export const renderStream = async (
-	stream: MastraModelOutput<unknown>,
-): Promise<string> => {
-	const reader = stream.fullStream.getReader();
-	const reasoningIds = new Set<string>();
-	let assistantText = "";
-	let hasOpenMetaLine = false;
-	let hasTextOutput = false;
-	let metaBodyColor: string = color.cyan;
-	let textLineNeedsPrefix = true;
+function isSubagentToolName(toolName: string): boolean {
+	return toolName.startsWith(SUBAGENT_TOOL_PREFIX);
+}
 
-	// The yellow `:S: <agent> ` prefix prepended before every meta tag and at
-	// every line break inside deltas. Empty when rendering supervisor chunks;
-	// set per-chunk when rendering a `tool-output`-wrapped sub-agent chunk.
-	let currentPrefixStr = "";
-	let currentIsSub = false;
+function subagentIdFromToolName(toolName: string): string {
+	return toolName.slice(SUBAGENT_TOOL_PREFIX.length);
+}
 
-	const flushText = (): void => {
-		if (hasTextOutput) {
+/**
+ * 将 Mastra `fullStream` 写到 stdout，并归约出 supervisor 最终可见文本（子代理流式文本不落盘到返回值）。
+ */
+class CliStreamRenderer {
+	private readonly stream: MastraModelOutput<unknown>;
+	private readonly reader: ReadableStreamDefaultReader<unknown>;
+	private readonly reasoningIds = new Set<string>();
+
+	private assistantText = "";
+	private hasOpenMetaLine = false;
+	private hasTextOutput = false;
+	private metaBodyColor: string = color.cyan;
+	private textLineNeedsPrefix = true;
+	private linePrefix = "";
+	private isSubagentStream = false;
+
+	constructor(stream: MastraModelOutput<unknown>) {
+		this.stream = stream;
+		this.reader = stream.fullStream.getReader();
+	}
+
+	async drain(): Promise<string> {
+		await this.runMainLoop();
+		this.closeOpenMeta();
+		this.flushPendingTextLine();
+
+		const [finalText] = await Promise.all([
+			this.stream.text,
+			this.stream.finishReason,
+		]);
+		if (this.assistantText.length === 0 && finalText) {
+			this.writeAssistantText(finalText);
+			this.assistantText = finalText;
 			process.stdout.write("\n");
-			hasTextOutput = false;
+			this.hasTextOutput = false;
 		}
-	};
 
-	const startMetaLine = (tagStr: string, bodyColor: string): void => {
-		flushText();
-		metaBodyColor = bodyColor;
-		process.stdout.write(`${currentPrefixStr}${bodyColor}${tagStr}`);
-		hasOpenMetaLine = true;
-	};
+		if (Envs.CLI_USAGE) {
+			console.log();
+			const usage = await this.stream.usage;
+			console.log(
+				`${color.cyan}${tag.stat}usage in=${formatTokens(usage.inputTokens)} out=${formatTokens(usage.outputTokens)} tot=${formatTokens(usage.totalTokens)}`,
+			);
+		}
 
-	const endMetaLine = (): void => {
+		if (this.assistantText.length === 0) {
+			console.log("[No response]");
+		}
+		return this.assistantText;
+	}
+
+	private async runMainLoop(): Promise<void> {
+		while (true) {
+			const { done, value } = await this.reader.read();
+			if (done) {
+				break;
+			}
+			const chunk = value as FullStreamChunk;
+			const payload = (chunk.payload ?? {}) as EnvelopePayload;
+
+			if (this.tryHandleSubagentDelegationOpen(chunk, payload)) {
+				continue;
+			}
+			if (this.tryHandleSubagentDelegationClose(chunk, payload)) {
+				continue;
+			}
+			if (this.tryHandleSubagentToolOutput(chunk, payload)) {
+				continue;
+			}
+
+			this.handleChunk(chunk);
+		}
+	}
+
+	/** 1) Supervisor 发起 `agent-*` 委派 */
+	private tryHandleSubagentDelegationOpen(
+		chunk: FullStreamChunk,
+		payload: EnvelopePayload,
+	): boolean {
+		if (
+			chunk.type !== "tool-call" ||
+			typeof payload.toolName !== "string" ||
+			!isSubagentToolName(payload.toolName)
+		) {
+			return false;
+		}
+		const subId = subagentIdFromToolName(payload.toolName);
+		this.handleChunk(chunk);
+		this.withLinePrefix(this.subagentLinePrefix(subId), () => {
+			this.isSubagentStream = true;
+			this.printMeta(tag.sub, "start ", color.yellow);
+			this.isSubagentStream = false;
+		});
+		return true;
+	}
+
+	/** 2) 委派结束（成功或父级 tool-error） */
+	private tryHandleSubagentDelegationClose(
+		chunk: FullStreamChunk,
+		payload: EnvelopePayload,
+	): boolean {
+		if (
+			(chunk.type !== "tool-result" && chunk.type !== "tool-error") ||
+			typeof payload.toolName !== "string" ||
+			!isSubagentToolName(payload.toolName)
+		) {
+			return false;
+		}
+		const subId = subagentIdFromToolName(payload.toolName);
+		this.withLinePrefix(this.subagentLinePrefix(subId), () => {
+			this.isSubagentStream = true;
+			if (chunk.type === "tool-error") {
+				const err = (chunk.payload as ToolErrorPayload | undefined)?.error;
+				this.printMeta(
+					tag.error,
+					`delegation failed: ${String(err)} `,
+					color.yellow,
+				);
+			} else {
+				this.printMeta(tag.sub, "end ", color.yellow);
+			}
+			this.isSubagentStream = false;
+		});
+		return true;
+	}
+
+	/** 3) 子代理内部块经 `tool-output` 解包后复用 `handleChunk` */
+	private tryHandleSubagentToolOutput(
+		chunk: FullStreamChunk,
+		payload: EnvelopePayload,
+	): boolean {
+		if (
+			chunk.type !== "tool-output" ||
+			typeof payload.toolName !== "string" ||
+			!isSubagentToolName(payload.toolName)
+		) {
+			return false;
+		}
+		const inner = payload.output;
+		if (!inner) {
+			return false;
+		}
+		const subId = subagentIdFromToolName(payload.toolName);
+		this.withLinePrefix(this.subagentLinePrefix(subId), () => {
+			this.isSubagentStream = true;
+			this.handleChunk(inner);
+			this.isSubagentStream = false;
+		});
+		return true;
+	}
+
+	private subagentLinePrefix(agentId: string): string {
+		return `${color.yellow}${tag.sub}${agentId} ${color.reset}`;
+	}
+
+	private withLinePrefix(prefix: string, fn: () => void): void {
+		const prev = this.linePrefix;
+		this.linePrefix = prefix;
+		try {
+			fn();
+		} finally {
+			this.linePrefix = prev;
+		}
+	}
+
+	private flushPendingTextLine(): void {
+		if (this.hasTextOutput) {
+			process.stdout.write("\n");
+			this.hasTextOutput = false;
+		}
+	}
+
+	private beginMetaLine(tagStr: string, bodyColor: string): void {
+		this.flushPendingTextLine();
+		this.metaBodyColor = bodyColor;
+		process.stdout.write(`${this.linePrefix}${bodyColor}${tagStr}`);
+		this.hasOpenMetaLine = true;
+	}
+
+	private endMetaLine(): void {
 		process.stdout.write(`${color.reset}\n`);
-		hasOpenMetaLine = false;
-	};
+		this.hasOpenMetaLine = false;
+	}
 
-	// Writes delta text inside an already-open meta line. When a prefix is set,
-	// any embedded '\n' breaks the line and re-emits `prefix + bodyColor` so
-	// multi-line reasoning keeps its visual grouping.
-	const writeMetaDelta = (text: string): void => {
-		if (!currentPrefixStr) {
+	private writeMetaDelta(text: string): void {
+		if (!this.linePrefix) {
 			process.stdout.write(text);
 			return;
 		}
@@ -76,29 +237,27 @@ export const renderStream = async (
 		for (let i = 0; i < parts.length; i++) {
 			if (i > 0) {
 				process.stdout.write(
-					`${color.reset}\n${currentPrefixStr}${metaBodyColor}`,
+					`${color.reset}\n${this.linePrefix}${this.metaBodyColor}`,
 				);
 			}
 			process.stdout.write(parts[i]);
 		}
-	};
+	}
 
-	const printMeta = (tagStr: string, body: string, bodyColor: string): void => {
-		startMetaLine(tagStr, bodyColor);
-		writeMetaDelta(body);
-		endMetaLine();
-	};
+	private printMeta(tagStr: string, body: string, bodyColor: string): void {
+		this.beginMetaLine(tagStr, bodyColor);
+		this.writeMetaDelta(body);
+		this.endMetaLine();
+	}
 
-	// Free-form assistant text (outside a meta line). With a prefix set we
-	// prepend it at every new line so multi-line output keeps the `:S:` marker.
-	const writeText = (text: string): void => {
-		if (hasOpenMetaLine) {
-			endMetaLine();
-			textLineNeedsPrefix = true;
+	private writeAssistantText(text: string): void {
+		if (this.hasOpenMetaLine) {
+			this.endMetaLine();
+			this.textLineNeedsPrefix = true;
 		}
-		if (!currentPrefixStr) {
+		if (!this.linePrefix) {
 			process.stdout.write(text);
-			hasTextOutput = true;
+			this.hasTextOutput = true;
 			return;
 		}
 		const parts = text.split("\n");
@@ -106,210 +265,158 @@ export const renderStream = async (
 			const part = parts[i];
 			if (i > 0) {
 				process.stdout.write("\n");
-				textLineNeedsPrefix = true;
+				this.textLineNeedsPrefix = true;
 			}
 			if (part.length > 0) {
-				if (textLineNeedsPrefix) {
-					process.stdout.write(currentPrefixStr);
-					textLineNeedsPrefix = false;
+				if (this.textLineNeedsPrefix) {
+					process.stdout.write(this.linePrefix);
+					this.textLineNeedsPrefix = false;
 				}
 				process.stdout.write(part);
 			}
 		}
 		if (text.endsWith("\n")) {
-			textLineNeedsPrefix = true;
+			this.textLineNeedsPrefix = true;
 		}
-		hasTextOutput = true;
-	};
+		this.hasTextOutput = true;
+	}
 
-	// Render a single chunk using the currently active prefix / sub flag.
-	// Kept identical in shape to the pre-subagent rendering logic so the
-	// supervisor output is unchanged.
-	const handleChunk = (chunk: FullStreamChunk): void => {
+	private closeOpenMeta(): void {
+		if (this.hasOpenMetaLine) {
+			this.endMetaLine();
+		}
+	}
+
+	private handleChunk(chunk: FullStreamChunk): void {
 		switch (chunk.type) {
 			case "reasoning-start":
-				if (Envs.CLI_REASON) {
-					const id = String(
-						(chunk.payload as { id?: string } | undefined)?.id ?? "",
-					);
-					if (id) {
-						reasoningIds.add(id);
-					}
-					startMetaLine(tag.reason, color.cyan);
-				}
+				this.onReasoningStart(chunk.payload as ReasoningPayload | undefined);
 				break;
 			case "reasoning-delta":
-				if (Envs.CLI_REASON) {
-					const p = chunk.payload as { id?: string; text?: string } | undefined;
-					const id = String(p?.id ?? "");
-					if (!id || reasoningIds.has(id)) {
-						writeMetaDelta(String(p?.text ?? ""));
-					}
-				}
+				this.onReasoningDelta(chunk.payload as ReasoningPayload | undefined);
 				break;
 			case "reasoning-end":
-				if (Envs.CLI_REASON) {
-					const id = String(
-						(chunk.payload as { id?: string } | undefined)?.id ?? "",
-					);
-					if (id) {
-						reasoningIds.delete(id);
-					}
-					endMetaLine();
-				}
+				this.onReasoningEnd(chunk.payload as ReasoningPayload | undefined);
 				break;
 			case "tool-call":
-				if (Envs.CLI_TOOL_CALL) {
-					const p = chunk.payload as
-						| { toolName?: string; args?: unknown }
-						| undefined;
-					printMeta(
-						tag.tool,
-						`call: ${p?.toolName ?? "?"} >> ${JSON.stringify(p?.args ?? {})} `,
-						color.cyan,
-					);
-				}
+				this.onToolCall(chunk.payload as ToolCallPayload | undefined);
 				break;
 			case "tool-result":
-				if (Envs.CLI_TOOL_CALL) {
-					const p = chunk.payload as { toolName?: string } | undefined;
-					printMeta(tag.tool, `result: ${p?.toolName ?? "?"} `, color.cyan);
-				}
+				this.onToolResult(chunk.payload as ToolResultPayload | undefined);
 				break;
-			case "tool-error": {
-				const p = chunk.payload as
-					| { toolName?: string; error?: unknown }
-					| undefined;
-				printMeta(
-					tag.error,
-					`tool: ${p?.toolName ?? "?"} >> ${String(p?.error)} `,
-					color.cyan,
-				);
+			case "tool-error":
+				this.onToolError(chunk.payload as ToolErrorPayload | undefined);
 				break;
-			}
-			case "error": {
-				const p = chunk.payload as { error?: unknown } | undefined;
-				printMeta(tag.error, `stream: ${String(p?.error)} `, color.cyan);
+			case "error":
+				this.onStreamError(chunk.payload as { error?: unknown } | undefined);
 				break;
-			}
-			case "text-delta": {
-				const p = chunk.payload as { text?: string } | undefined;
-				const text = String(p?.text ?? "");
-				writeText(text);
-				// Only supervisor text counts toward the final return value;
-				// sub-agent text streams to stdout but the supervisor's own
-				// summary is what we hand back to the caller.
-				if (!currentIsSub) {
-					assistantText += text;
-				}
+			case "text-delta":
+				this.onTextDelta(chunk.payload as { text?: string } | undefined);
 				break;
-			}
 			default:
 				break;
 		}
-	};
-
-	const subPrefix = (agentId: string): string =>
-		`${color.yellow}${tag.sub}${agentId} ${color.reset}`;
-
-	while (true) {
-		const { done, value } = await reader.read();
-		if (done) {
-			break;
-		}
-		const chunk = value as unknown as FullStreamChunk;
-		const payload = (chunk.payload ?? {}) as {
-			toolName?: string;
-			toolCallId?: string;
-			output?: FullStreamChunk;
-		};
-
-		// 1) Top-level delegation boundary: supervisor just asked an agent-tool.
-		if (
-			chunk.type === "tool-call" &&
-			typeof payload.toolName === "string" &&
-			payload.toolName.startsWith(SUBAGENT_TOOL_PREFIX)
-		) {
-			const subId = payload.toolName.slice(SUBAGENT_TOOL_PREFIX.length);
-			handleChunk(chunk); // parent-level `:T: call: agent-xxx >> {...}`
-			currentPrefixStr = subPrefix(subId);
-			currentIsSub = true;
-			printMeta(tag.sub, "start ", color.yellow);
-			currentPrefixStr = "";
-			currentIsSub = false;
-			continue;
-		}
-
-		// 2) Top-level delegation completion. Banner replaces the otherwise
-		//    empty parent tool-result line.
-		if (
-			(chunk.type === "tool-result" || chunk.type === "tool-error") &&
-			typeof payload.toolName === "string" &&
-			payload.toolName.startsWith(SUBAGENT_TOOL_PREFIX)
-		) {
-			const subId = payload.toolName.slice(SUBAGENT_TOOL_PREFIX.length);
-			currentPrefixStr = subPrefix(subId);
-			currentIsSub = true;
-			if (chunk.type === "tool-error") {
-				const errPayload = chunk.payload as { error?: unknown } | undefined;
-				printMeta(
-					tag.error,
-					`delegation failed: ${String(errPayload?.error)} `,
-					color.yellow,
-				);
-			} else {
-				printMeta(tag.sub, "end ", color.yellow);
-			}
-			currentPrefixStr = "";
-			currentIsSub = false;
-			continue;
-		}
-
-		// 3) Sub-agent inner chunk, forwarded by Mastra as a `tool-output`
-		//    envelope. Unwrap `payload.output` and render it under the yellow
-		//    `:S: <agent> ` prefix, reusing the supervisor's own switch logic.
-		if (
-			chunk.type === "tool-output" &&
-			typeof payload.toolName === "string" &&
-			payload.toolName.startsWith(SUBAGENT_TOOL_PREFIX) &&
-			payload.output
-		) {
-			const subId = payload.toolName.slice(SUBAGENT_TOOL_PREFIX.length);
-			currentPrefixStr = subPrefix(subId);
-			currentIsSub = true;
-			handleChunk(payload.output);
-			currentPrefixStr = "";
-			currentIsSub = false;
-			continue;
-		}
-
-		// 4) Regular supervisor-level chunk.
-		handleChunk(chunk);
 	}
 
-	if (hasOpenMetaLine) {
-		endMetaLine();
-	}
-	flushText();
-
-	const [finalText] = await Promise.all([stream.text, stream.finishReason]);
-	if (assistantText.length === 0 && finalText) {
-		writeText(finalText);
-		assistantText = finalText;
-		process.stdout.write("\n");
-		hasTextOutput = false;
+	private onReasoningStart(payload: ReasoningPayload | undefined): void {
+		if (!Envs.CLI_REASON) {
+			return;
+		}
+		const id = String(payload?.id ?? "");
+		if (id) {
+			this.reasoningIds.add(id);
+		}
+		this.beginMetaLine(tag.reason, color.cyan);
 	}
 
-	if (Envs.CLI_USAGE) {
-		console.log();
-		const usage = await stream.usage;
-		console.log(
-			`${color.cyan}${tag.stat}usage in=${formatTokens(usage.inputTokens)} out=${formatTokens(usage.outputTokens)} tot=${formatTokens(usage.totalTokens)}`,
+	private onReasoningDelta(payload: ReasoningPayload | undefined): void {
+		if (!Envs.CLI_REASON) {
+			return;
+		}
+		const id = String(payload?.id ?? "");
+		if (!id || this.reasoningIds.has(id)) {
+			this.writeMetaDelta(String(payload?.text ?? ""));
+		}
+	}
+
+	private onReasoningEnd(payload: ReasoningPayload | undefined): void {
+		if (!Envs.CLI_REASON) {
+			return;
+		}
+		const id = String(payload?.id ?? "");
+		if (id) {
+			this.reasoningIds.delete(id);
+		}
+		this.endMetaLine();
+	}
+
+	private onToolCall(payload: ToolCallPayload | undefined): void {
+		const toolName = String(payload?.toolName ?? "?");
+		if (isMastraSkillTool(toolName)) {
+			this.printMeta(
+				tag.skill,
+				`${toolName} >> ${formatSkillToolCallSummary(toolName, payload?.args)} `,
+				color.yellow,
+			);
+			return;
+		}
+		if (Envs.CLI_TOOL_CALL) {
+			this.printMeta(
+				tag.tool,
+				`call: ${toolName} >> ${JSON.stringify(payload?.args ?? {})} `,
+				color.cyan,
+			);
+		}
+	}
+
+	private onToolResult(payload: ToolResultPayload | undefined): void {
+		const toolName = String(payload?.toolName ?? "?");
+		if (isMastraSkillTool(toolName)) {
+			this.printMeta(
+				tag.skill,
+				`${toolName} >> ${formatSkillToolResultPreview(toolName, payload?.result)} `,
+				color.yellow,
+			);
+			return;
+		}
+		if (Envs.CLI_TOOL_CALL) {
+			this.printMeta(tag.tool, `result: ${toolName} `, color.cyan);
+		}
+	}
+
+	private onToolError(payload: ToolErrorPayload | undefined): void {
+		const toolName = String(payload?.toolName ?? "?");
+		if (isMastraSkillTool(toolName)) {
+			this.printMeta(
+				tag.skill,
+				`${toolName} error >> ${String(payload?.error)} `,
+				color.yellow,
+			);
+			return;
+		}
+		this.printMeta(
+			tag.error,
+			`tool: ${toolName} >> ${String(payload?.error)} `,
+			color.cyan,
 		);
 	}
 
-	if (assistantText.length === 0) {
-		console.log("[No response]");
+	private onStreamError(payload: { error?: unknown } | undefined): void {
+		this.printMeta(tag.error, `stream: ${String(payload?.error)} `, color.cyan);
 	}
-	return assistantText;
+
+	private onTextDelta(payload: { text?: string } | undefined): void {
+		const text = String(payload?.text ?? "");
+		this.writeAssistantText(text);
+		if (!this.isSubagentStream) {
+			this.assistantText += text;
+		}
+	}
+}
+
+export const renderStream = async (
+	stream: MastraModelOutput<unknown>,
+): Promise<string> => {
+	const renderer = new CliStreamRenderer(stream);
+	return renderer.drain();
 };

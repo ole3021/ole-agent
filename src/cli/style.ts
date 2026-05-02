@@ -16,4 +16,5 @@ export const tag = {
 	stat: " :: ",
 	step: " [LLM] ",
 	sub: " :S: ",
+	skill: " :K: ",
 } as const;

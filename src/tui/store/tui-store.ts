@@ -237,14 +237,14 @@ export const useTuiStore = create<TuiStore>((set, get) => ({
 	},
 
 	clear: () =>
-		set({
-			blocks: [],
+		set((state) => ({
+			blocks: state.blocks.filter((b) => b.type === "system"),
 			debugState: "idle",
 			usage: { input: 0, output: 0, total: 0 },
 			totalUsage: { input: 0, output: 0, total: 0 },
 			todoStats: { pending: 0, inProgress: 0, completed: 0, cancelled: 0 },
 			agentTodos: [],
-		}),
+		})),
 
 	setGlobalError: (globalError) => set({ globalError }),
 }));

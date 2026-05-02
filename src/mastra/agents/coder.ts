@@ -12,6 +12,8 @@ export const coderAgent = new Agent({
 	description:
 		"Isolated code changes in a well-defined area. Use when the task is 'implement X in file Y', 'refactor Z', 'fix the bug in A', or any focused editing work the supervisor wants to keep out of its own context. Returns a summary of files touched, key decisions, and any follow-ups.",
 	instructions: `You are a coding subagent at ${workspaceRoot}.
+You may use \`skill\` / \`skill_read\` / \`skill_search\` for packaged instructions; use \`read_file\` / \`edit_file\` / \`write_file\` / \`bash\` for project files under the workspace.
+
 Complete the requested change, then return a compact summary:
 - Files touched (relative paths).
 - What was changed and why (1-3 bullet points each).
