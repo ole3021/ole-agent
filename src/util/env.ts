@@ -9,6 +9,14 @@ const envSchema = z.object({
 	CLI_USAGE: z.stringbool().default(false),
 	CLI_DEBUG_STEP: z.stringbool().default(false),
 	AGENT_MAX_STEPS: z.coerce.number().int().positive().default(30),
+	CONTEXT_COMPACT_ENABLED: z.stringbool().default(true),
+	CONTEXT_LIMIT_CHARS: z.coerce.number().int().positive().default(50_000),
+	CONTEXT_SUMMARY_MAX_INPUT_CHARS: z.coerce
+		.number()
+		.int()
+		.positive()
+		.default(80_000),
+	COMPACT_MODEL_ID: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

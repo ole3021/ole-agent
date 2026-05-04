@@ -1,5 +1,16 @@
+import type { AgentExecutionOptionsBase } from "@mastra/core/agent";
+import { RequestContext } from "@mastra/core/request-context";
 import { coreAgent } from "../../mastra/agents/core";
 import { ensureOleAgentWorkspaceReady } from "../../mastra/index";
+import type { TranscriptMessage, UserTranscriptMessage } from "../../types/message";
+import {
+	buildContextMessagesWithAssistantMessage,
+	buildContextMessagesWithUserMessage,
+	captureTranscriptModelPrefixSnapshot,
+	resetTranscriptModelPrefixStore,
+	setTranscriptModelPrefix,
+} from "../../util/messages";
+import { blocksToTranscriptMessages } from "../lib/blocks-to-transcript";
 import { streamToEvents } from "../lib/stream-bridge";
 import {
 	applyEvent,
@@ -13,7 +24,6 @@ import {
 import type {
 	AgentTodoItem,
 	DebugState,
-	Message,
 	StreamToggles,
 	TodoStats,
 	TranscriptBlock,
@@ -21,6 +31,13 @@ import type {
 	UsageState,
 } from "../store/types";
 import { isAbortError } from "./abort-error";
+
+let sessionRequestContext = new RequestContext();
+
+export const resetAgentSessionContext = (): void => {
+	sessionRequestContext = new RequestContext();
+	resetTranscriptModelPrefixStore();
+};
 
 export type TurnProgress = {
 	blocks: TranscriptBlock[];
@@ -35,7 +52,9 @@ export type TurnProgress = {
 };
 
 export const runAgentTurn = async (params: {
-	history: Message[];
+	/** 提交前 UI 上的 blocks；由本函数派生 `TranscriptMessage[]`（仅 user/assistant） */
+	blocksBeforeTurn: TranscriptBlock[];
+	latestUserMessage: UserTranscriptMessage;
 	toggles: StreamToggles;
 	initialBlocks: TranscriptBlock[];
 	totalUsage: UsageState;
@@ -45,7 +64,8 @@ export const runAgentTurn = async (params: {
 	onProgress: (p: TurnProgress) => void;
 }): Promise<"complete" | "aborted" | "error"> => {
 	const {
-		history,
+		blocksBeforeTurn,
+		latestUserMessage,
 		toggles,
 		initialBlocks,
 		totalUsage: totalUsageStart,
@@ -66,11 +86,19 @@ export const runAgentTurn = async (params: {
 	let currentAgentTodos = agentTodosStart;
 	let assistantText = "";
 
+	let transcriptModelPrefixSnapshot: TranscriptMessage[] | null = null;
 	try {
 		await ensureOleAgentWorkspaceReady();
-		const stream = await coreAgent.stream(history, {
+		const transcriptMessages = blocksToTranscriptMessages(blocksBeforeTurn);
+		const contextMessages = buildContextMessagesWithUserMessage(
+			transcriptMessages,
+			latestUserMessage,
+		);
+		transcriptModelPrefixSnapshot = captureTranscriptModelPrefixSnapshot();
+		const stream = await coreAgent.stream(contextMessages, {
 			abortSignal: signal,
-		});
+			requestContext: sessionRequestContext,
+		} as AgentExecutionOptionsBase<unknown>);
 		for await (const event of streamToEvents(stream, toggles, signal)) {
 			currentBlocks = applyEvent(currentBlocks, event, toggles);
 			currentTurnStats = updateTurnStats(currentTurnStats, event);
@@ -102,6 +130,7 @@ export const runAgentTurn = async (params: {
 			});
 		}
 		if (signal.aborted) {
+			setTranscriptModelPrefix(transcriptModelPrefixSnapshot);
 			onProgress({
 				blocks: currentBlocks,
 				turnStats: currentTurnStats,
@@ -117,9 +146,14 @@ export const runAgentTurn = async (params: {
 			});
 			return "aborted";
 		}
+		buildContextMessagesWithAssistantMessage({
+			role: "assistant",
+			content: assistantText,
+		});
 		return "complete";
 	} catch (error) {
 		if (isAbortError(error) || signal.aborted) {
+			setTranscriptModelPrefix(transcriptModelPrefixSnapshot);
 			onProgress({
 				blocks: currentBlocks,
 				turnStats: currentTurnStats,
@@ -136,6 +170,7 @@ export const runAgentTurn = async (params: {
 			return "aborted";
 		}
 
+		setTranscriptModelPrefix(transcriptModelPrefixSnapshot);
 		currentBlocks = [
 			...currentBlocks,
 			{

@@ -1,19 +1,28 @@
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
+import type { AgentExecutionOptionsBase } from "@mastra/core/agent";
+import { RequestContext } from "@mastra/core/request-context";
 import { coreAgent } from "../mastra/agents/core";
 import { ensureOleAgentWorkspaceReady } from "../mastra/index";
+import type { AssistantTranscriptMessage, TranscriptMessage, UserTranscriptMessage } from "../types/message";
+import {
+	buildContextMessagesWithAssistantMessage,
+	buildContextMessagesWithUserMessage,
+	resetTranscriptModelPrefixStore,
+	captureTranscriptModelPrefixSnapshot,
+	setTranscriptModelPrefix,
+} from "../util/messages";
 import { Envs } from "../util/env";
 import { formatTokens, renderStream } from "./stream-render";
 import { color, tag } from "./style";
 
-type Message = {
-	role: "user" | "assistant";
-	content: string;
-};
 
 export async function runAgentLoop(): Promise<void> {
 	const rl = createInterface({ input, output });
-	const history: Message[] = [];
+	resetTranscriptModelPrefixStore();
+	const sessionRequestContext = new RequestContext();
+	/** 完整本地逐字 transcript（每轮追加）；经 `buildContextMessagesWithUserMessage` 得到可能含压缩/前缀折叠的 `contextMessages` 再传给模型 */
+	const transcriptMessages: TranscriptMessage[] = [];
 
 	console.log(
 		`${color.cyan}Hint: Ctrl+C to cancel current turn, "q" or Ctrl+D to exit.${color.reset}`,
@@ -31,38 +40,63 @@ export async function runAgentLoop(): Promise<void> {
 			const onSigint = () => ctrl.abort();
 			process.once("SIGINT", onSigint);
 
+			const transcriptModelPrefixSnapshot =
+				captureTranscriptModelPrefixSnapshot();
 			try {
 				await ensureOleAgentWorkspaceReady();
-				history.push({ role: "user", content: query });
-				const result = await coreAgent.stream(history, {
+				const latestUserMessage: UserTranscriptMessage = {
+					role: "user",
+					content: query,
+				};
+				const contextMessages: TranscriptMessage[] = buildContextMessagesWithUserMessage(
+					transcriptMessages,
+					latestUserMessage,
+				);
+				transcriptMessages.push(latestUserMessage);
+				const result = await coreAgent.stream(contextMessages, {
 					abortSignal: ctrl.signal,
+					requestContext: sessionRequestContext,
 					onStepFinish: (step) => {
 						if (!Envs.CLI_DEBUG_STEP) {
 							return;
 						}
-						const body = (step.request?.body ?? {}) as {
-							model?: string;
-							temperature?: number;
+						const s = step as {
+							request?: { body?: { model?: string; temperature?: number } };
+							finishReason?: string;
+							toolCalls: ReadonlyArray<{ payload: { toolName: string } }>;
+							usage: {
+								inputTokens?: number;
+								outputTokens?: number;
+								totalTokens?: number;
+							};
 						};
+						const body = s.request?.body ?? {};
+						// TODO: Optimize log output to CLI and TUI 
 						console.log();
 						console.log(
 							`${color.magenta}${tag.step}${body.model ?? "unknown"}${body.temperature !== undefined ? ` >> temperature: ${body.temperature}` : ""} ${color.reset}`,
 						);
 						console.log(
-							`${color.magenta}${tag.step}${step.finishReason}${step.toolCalls.length > 0 ? ` >> toolCalls: ${step.toolCalls.map((t) => t.payload.toolName).join(",")}` : ""} ${color.reset}`,
+							`${color.magenta}${tag.step}${s.finishReason}${s.toolCalls.length > 0 ? ` >> toolCalls: ${s.toolCalls.map((t) => t.payload.toolName).join(",")}` : ""} ${color.reset}`,
 						);
 						console.log(
-							`${color.magenta}${tag.step}in=${formatTokens(step.usage.inputTokens)} out=${formatTokens(step.usage.outputTokens)} tot=${formatTokens(step.usage.totalTokens)} ${color.reset}`,
+							`${color.magenta}${tag.step}in=${formatTokens(s.usage.inputTokens)} out=${formatTokens(s.usage.outputTokens)} tot=${formatTokens(s.usage.totalTokens)} ${color.reset}`,
 						);
 					},
-				});
+				} as AgentExecutionOptionsBase<unknown>);
 				const assistantText = await renderStream(result);
+				const assistantMessage: AssistantTranscriptMessage = { role: "assistant", content: assistantText };
+				buildContextMessagesWithAssistantMessage(assistantMessage);
 				if (assistantText.length > 0) {
-					history.push({ role: "assistant", content: assistantText });
+					transcriptMessages.push(assistantMessage);
 				}
 				console.log();
 			} catch (error) {
-				history.pop();
+				const tail = transcriptMessages.at(-1);
+				if (tail?.role === "user") {
+					transcriptMessages.pop();
+				}
+				setTranscriptModelPrefix(transcriptModelPrefixSnapshot);
 				if (
 					ctrl.signal.aborted ||
 					(error instanceof Error && error.name === "AbortError")

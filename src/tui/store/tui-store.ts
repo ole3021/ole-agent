@@ -1,11 +1,14 @@
 import { create } from "zustand";
 import { Envs } from "../../util/env";
-import { runAgentTurn } from "../services/agent-turn.service";
+import {
+	resetAgentSessionContext,
+	runAgentTurn,
+} from "../services/agent-turn.service";
+import type { UserTranscriptMessage } from "../../types/message";
 import type {
 	AgentTodoItem,
 	Command,
 	DebugState,
-	Message,
 	StreamToggles,
 	TodoStats,
 	TranscriptBlock,
@@ -173,16 +176,10 @@ export const useTuiStore = create<TuiStore>((set, get) => ({
 
 		const { toggles } = get();
 		const prevBlocks = get().blocks;
-		const history: Message[] = [
-			...prevBlocks
-				.filter((b) => b.type === "user" || b.type === "assistant")
-				.map((b) => ({
-					role: b.type as "user" | "assistant",
-					content:
-						b.type === "assistant" ? b.text : (b as { text: string }).text,
-				})),
-			{ role: "user", content: rawQuery },
-		];
+		const latestUserMessage: UserTranscriptMessage = {
+			role: "user",
+			content: rawQuery,
+		};
 
 		const userId = `user-${Date.now()}`;
 		set((s) => ({
@@ -211,7 +208,8 @@ export const useTuiStore = create<TuiStore>((set, get) => ({
 
 		try {
 			await runAgentTurn({
-				history,
+				blocksBeforeTurn: prevBlocks,
+				latestUserMessage,
 				toggles,
 				initialBlocks,
 				totalUsage: totalUsageStart,
@@ -236,7 +234,8 @@ export const useTuiStore = create<TuiStore>((set, get) => ({
 		set({ debugState: "aborted", isStreaming: false });
 	},
 
-	clear: () =>
+	clear: () => {
+		resetAgentSessionContext();
 		set((state) => ({
 			blocks: state.blocks.filter((b) => b.type === "system"),
 			debugState: "idle",
@@ -244,7 +243,8 @@ export const useTuiStore = create<TuiStore>((set, get) => ({
 			totalUsage: { input: 0, output: 0, total: 0 },
 			todoStats: { pending: 0, inProgress: 0, completed: 0, cancelled: 0 },
 			agentTodos: [],
-		})),
+		}));
+	},
 
 	setGlobalError: (globalError) => set({ globalError }),
 }));
