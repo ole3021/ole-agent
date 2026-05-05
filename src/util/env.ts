@@ -17,6 +17,21 @@ const envSchema = z.object({
 		.positive()
 		.default(80_000),
 	COMPACT_MODEL_ID: z.string().optional(),
+	STT_PROVIDER: z.enum(["volcengine", "deepgram"]).default("volcengine"),
+	DEEPGRAM_API_KEY: z.string().optional(),
+	VOICE_SUMMARY_INTERVAL_SEC: z.coerce.number().int().positive().default(5),
+	VOICE_SHOW_PARTIAL: z.stringbool().default(true),
+	VOICE_DEEPGRAM_MODEL: z.string().default("nova-3"),
+	VOICE_DEEPGRAM_LANGUAGE: z.string().default("zh-CN"),
+	VOLCENGINE_API_KEY: z.string().optional(),
+	VOLCENGINE_APP_ID: z.string().optional(),
+	VOLCENGINE_ACCESS_TOKEN: z.string().optional(),
+	VOICE_VOLC_RESOURCE_ID: z.string().default("volc.seedasr.sauc.duration"),
+	VOICE_VOLC_WS_URL: z
+		.string()
+		.default("wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"),
+	VOICE_VOLC_MODEL_NAME: z.string().default("bigmodel"),
+	VOICE_FFMPEG_DEVICE: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
