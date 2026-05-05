@@ -4,7 +4,7 @@ const envSchema = z.object({
 	MINIMAX_API_KEY: z.string().min(1),
 	MODEL_ID: z.string().default("minimax-cn/MiniMax-M2.7-highspeed"),
 	WORKSPACE_ROOT: z.string().optional(),
-	CLI_REASON: z.stringbool().default(false),
+	CLI_REASON: z.stringbool().default(true),
 	CLI_TOOL_CALL: z.stringbool().default(false),
 	CLI_USAGE: z.stringbool().default(false),
 	CLI_DEBUG_STEP: z.stringbool().default(false),

@@ -394,10 +394,8 @@ export const formatTokens = (n: number | undefined): string => {
 	return String(n);
 };
 
-export const formatUsageStateLine = (label: string, u: UsageState): string =>
-	`${label}  入 ${formatTokens(u.input)}  出 ${formatTokens(
-		u.output,
-	)}  计 ${formatTokens(u.total)}`;
+export const formatUsageStateLine = (u: UsageState): string =>
+	u.total > 0 ? `${formatTokens(u.total)} Tokens[${formatTokens(u.input)} In ${formatTokens(u.output)} Out]` : '';
 
 export const truncateText = (
 	text: string,

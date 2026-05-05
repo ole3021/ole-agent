@@ -26,8 +26,9 @@ export const TuiApp = () => {
 	const debugState = useTuiStore((s) => s.debugState);
 	const toggles = useTuiStore((s) => s.toggles);
 	const totalUsage = useTuiStore((s) => s.totalUsage);
-	const todoStats = useTuiStore((s) => s.todoStats);
 	const agentTodos = useTuiStore((s) => s.agentTodos);
+	const executionRuntime = useTuiStore((s) => s.executionRuntime);
+	const executionTimeline = useTuiStore((s) => s.executionTimeline);
 	const usage = useTuiStore((s) => s.usage);
 	const toolCalls = useTuiStore((s) => s.turnStats.toolCalls);
 	const paletteOpen = useTuiStore((s) => s.paletteOpen);
@@ -146,12 +147,12 @@ export const TuiApp = () => {
 					<TranscriptView
 						blocks={blocks}
 						height={transcriptHeight}
-						isStreaming={isStreaming}
 						maxScrollOffset={maxScrollOffset}
 						scrollOffset={scrollOffset}
 						scrollDown={scrollDown}
 						scrollUp={scrollUp}
 						textCols={leftCols}
+						totalUsage={totalUsage}
 					/>
 					<InputBar
 						inputResetKey={inputResetEpoch}
@@ -167,10 +168,11 @@ export const TuiApp = () => {
 						<SidebarView
 							agentTodos={agentTodos}
 							debugState={debugState}
+							executionRuntime={executionRuntime}
+							executionTimeline={executionTimeline}
 							height={transcriptHeight}
 							isStreaming={isStreaming}
 							sidebarCols={sidebarWidth}
-							todoStats={todoStats}
 							toggles={toggles}
 							toolCalls={toolCalls}
 							totalUsage={totalUsage}

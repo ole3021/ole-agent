@@ -1,42 +1,43 @@
 import type { AgentExecutionOptionsBase } from "@mastra/core/agent";
-import { RequestContext } from "@mastra/core/request-context";
+import {
+	appendExecutionTimeline,
+	updateExecutionRuntime,
+} from "../../app/session/runtime-state";
+import { SessionOrchestrator } from "../../app/session/session-orchestrator";
+import {
+	isAgentRunEventVisible,
+	streamToAgentRunEvents,
+} from "../../app/session/stream-to-events";
 import { coreAgent } from "../../mastra/agents/core";
-import { ensureOleAgentWorkspaceReady } from "../../mastra/index";
-import type { TranscriptMessage, UserTranscriptMessage } from "../../types/message";
-import {
-	buildContextMessagesWithAssistantMessage,
-	buildContextMessagesWithUserMessage,
-	captureTranscriptModelPrefixSnapshot,
-	resetTranscriptModelPrefixStore,
-	setTranscriptModelPrefix,
-} from "../../util/messages";
+import type {
+	TranscriptMessage,
+	UserTranscriptMessage,
+} from "../../types/message";
+import { applyEvent, resetIdCounter } from "../lib/block-reducer";
 import { blocksToTranscriptMessages } from "../lib/blocks-to-transcript";
-import { streamToEvents } from "../lib/stream-bridge";
 import {
-	applyEvent,
-	resetIdCounter,
 	updateDebugState,
 	updateTodoState,
 	updateTotalUsage,
 	updateTurnStats,
 	updateUsage,
-} from "../lib/stream-processors";
+} from "../lib/runtime-reducer";
 import type {
 	AgentTodoItem,
 	DebugState,
+	ExecutionRuntimeState,
+	ExecutionTimelineEntry,
 	StreamToggles,
-	TodoStats,
 	TranscriptBlock,
 	TurnStats,
 	UsageState,
 } from "../store/types";
 import { isAbortError } from "./abort-error";
 
-let sessionRequestContext = new RequestContext();
+const sessionOrchestrator = new SessionOrchestrator();
 
 export const resetAgentSessionContext = (): void => {
-	sessionRequestContext = new RequestContext();
-	resetTranscriptModelPrefixStore();
+	sessionOrchestrator.resetSession();
 };
 
 export type TurnProgress = {
@@ -45,8 +46,9 @@ export type TurnProgress = {
 	debugState: DebugState;
 	usage: UsageState;
 	totalUsage: UsageState;
-	todoStats: TodoStats;
 	agentTodos: AgentTodoItem[];
+	executionRuntime: ExecutionRuntimeState;
+	executionTimeline: ExecutionTimelineEntry[];
 	isStreaming: boolean;
 	elapsedSec: number;
 };
@@ -58,8 +60,9 @@ export const runAgentTurn = async (params: {
 	toggles: StreamToggles;
 	initialBlocks: TranscriptBlock[];
 	totalUsage: UsageState;
-	todoStats: TodoStats;
 	agentTodos: AgentTodoItem[];
+	executionRuntime: ExecutionRuntimeState;
+	executionTimeline: ExecutionTimelineEntry[];
 	signal: AbortSignal;
 	onProgress: (p: TurnProgress) => void;
 }): Promise<"complete" | "aborted" | "error"> => {
@@ -69,8 +72,9 @@ export const runAgentTurn = async (params: {
 		toggles,
 		initialBlocks,
 		totalUsage: totalUsageStart,
-		todoStats: todoStatsStart,
 		agentTodos: agentTodosStart,
+		executionRuntime: executionRuntimeStart,
+		executionTimeline: executionTimelineStart,
 		signal,
 		onProgress,
 	} = params;
@@ -82,25 +86,52 @@ export const runAgentTurn = async (params: {
 	let currentDebugState: DebugState = "running";
 	let currentUsage: UsageState = { input: 0, output: 0, total: 0 };
 	let currentTotalUsage = totalUsageStart;
-	let currentTodoStats = todoStatsStart;
 	let currentAgentTodos = agentTodosStart;
+	let currentExecutionRuntime = executionRuntimeStart;
+	let currentExecutionTimeline = executionTimelineStart;
 	let assistantText = "";
+
+	const emitProgressSnapshot = (
+		debugState: DebugState,
+		isStreaming: boolean,
+	) => {
+		onProgress({
+			blocks: currentBlocks,
+			turnStats: currentTurnStats,
+			debugState,
+			usage: currentUsage,
+			totalUsage: currentTotalUsage,
+			agentTodos: currentAgentTodos,
+			executionRuntime: currentExecutionRuntime,
+			executionTimeline: currentExecutionTimeline,
+			isStreaming,
+			elapsedSec: currentTurnStats.startAtMs
+				? Math.floor((Date.now() - currentTurnStats.startAtMs) / 1000)
+				: 0,
+		});
+	};
 
 	let transcriptModelPrefixSnapshot: TranscriptMessage[] | null = null;
 	try {
-		await ensureOleAgentWorkspaceReady();
 		const transcriptMessages = blocksToTranscriptMessages(blocksBeforeTurn);
-		const contextMessages = buildContextMessagesWithUserMessage(
-			transcriptMessages,
+		const prepared = await sessionOrchestrator.prepareTurn({
+			transcriptMessagesBeforeTurn: transcriptMessages,
 			latestUserMessage,
-		);
-		transcriptModelPrefixSnapshot = captureTranscriptModelPrefixSnapshot();
+		});
+		const {
+			contextMessages,
+			transcriptModelPrefixSnapshot: snapshot,
+			requestContext,
+		} = prepared;
+		transcriptModelPrefixSnapshot = snapshot;
 		const stream = await coreAgent.stream(contextMessages, {
 			abortSignal: signal,
-			requestContext: sessionRequestContext,
+			requestContext,
 		} as AgentExecutionOptionsBase<unknown>);
-		for await (const event of streamToEvents(stream, toggles, signal)) {
-			currentBlocks = applyEvent(currentBlocks, event, toggles);
+		for await (const event of streamToAgentRunEvents(stream, signal)) {
+			if (isAgentRunEventVisible(event, toggles)) {
+				currentBlocks = applyEvent(currentBlocks, event);
+			}
 			currentTurnStats = updateTurnStats(currentTurnStats, event);
 			currentDebugState = updateDebugState(
 				currentDebugState,
@@ -109,68 +140,36 @@ export const runAgentTurn = async (params: {
 			);
 			currentUsage = updateUsage(currentUsage, event);
 			currentTotalUsage = updateTotalUsage(currentTotalUsage, event);
-			({ todoStats: currentTodoStats, agentTodos: currentAgentTodos } =
-				updateTodoState(currentTodoStats, currentAgentTodos, event));
+			currentExecutionRuntime = updateExecutionRuntime(
+				currentExecutionRuntime,
+				event,
+			);
+			currentExecutionTimeline = appendExecutionTimeline(
+				currentExecutionTimeline,
+				event,
+			);
+			currentAgentTodos = updateTodoState(currentAgentTodos, event);
 			if (event.kind === "text-delta") {
 				assistantText += event.text;
 			}
 
-			onProgress({
-				blocks: currentBlocks,
-				turnStats: currentTurnStats,
-				debugState: currentDebugState,
-				usage: currentUsage,
-				totalUsage: currentTotalUsage,
-				todoStats: currentTodoStats,
-				agentTodos: currentAgentTodos,
-				isStreaming: event.kind !== "turn-end",
-				elapsedSec: currentTurnStats.startAtMs
-					? Math.floor((Date.now() - currentTurnStats.startAtMs) / 1000)
-					: 0,
-			});
+			emitProgressSnapshot(currentDebugState, event.kind !== "turn-end");
 		}
 		if (signal.aborted) {
-			setTranscriptModelPrefix(transcriptModelPrefixSnapshot);
-			onProgress({
-				blocks: currentBlocks,
-				turnStats: currentTurnStats,
-				debugState: "aborted",
-				usage: currentUsage,
-				totalUsage: currentTotalUsage,
-				todoStats: currentTodoStats,
-				agentTodos: currentAgentTodos,
-				isStreaming: false,
-				elapsedSec: currentTurnStats.startAtMs
-					? Math.floor((Date.now() - currentTurnStats.startAtMs) / 1000)
-					: 0,
-			});
+			sessionOrchestrator.restoreSnapshot(transcriptModelPrefixSnapshot);
+			emitProgressSnapshot("aborted", false);
 			return "aborted";
 		}
-		buildContextMessagesWithAssistantMessage({
-			role: "assistant",
-			content: assistantText,
-		});
+		sessionOrchestrator.commitAssistantText(assistantText);
 		return "complete";
 	} catch (error) {
 		if (isAbortError(error) || signal.aborted) {
-			setTranscriptModelPrefix(transcriptModelPrefixSnapshot);
-			onProgress({
-				blocks: currentBlocks,
-				turnStats: currentTurnStats,
-				debugState: "aborted",
-				usage: currentUsage,
-				totalUsage: currentTotalUsage,
-				todoStats: currentTodoStats,
-				agentTodos: currentAgentTodos,
-				isStreaming: false,
-				elapsedSec: currentTurnStats.startAtMs
-					? Math.floor((Date.now() - currentTurnStats.startAtMs) / 1000)
-					: 0,
-			});
+			sessionOrchestrator.restoreSnapshot(transcriptModelPrefixSnapshot);
+			emitProgressSnapshot("aborted", false);
 			return "aborted";
 		}
 
-		setTranscriptModelPrefix(transcriptModelPrefixSnapshot);
+		sessionOrchestrator.restoreSnapshot(transcriptModelPrefixSnapshot);
 		currentBlocks = [
 			...currentBlocks,
 			{
@@ -180,19 +179,7 @@ export const runAgentTurn = async (params: {
 			},
 		];
 		currentDebugState = "error";
-		onProgress({
-			blocks: currentBlocks,
-			turnStats: currentTurnStats,
-			debugState: currentDebugState,
-			usage: currentUsage,
-			totalUsage: currentTotalUsage,
-			todoStats: currentTodoStats,
-			agentTodos: currentAgentTodos,
-			isStreaming: false,
-			elapsedSec: currentTurnStats.startAtMs
-				? Math.floor((Date.now() - currentTurnStats.startAtMs) / 1000)
-				: 0,
-		});
+		emitProgressSnapshot(currentDebugState, false);
 		return "error";
 	}
 };

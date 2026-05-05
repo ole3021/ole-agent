@@ -2,7 +2,6 @@ import { Agent } from "@mastra/core/agent";
 import { workspaceRoot } from "../../config/workspace-root";
 import { Envs } from "../../util/env";
 import { createPlanReminderPrepareStep } from "../hooks/plan-reminder";
-import { sessionCompactProcessor } from "../processors/session-compact";
 import { bashTool } from "../tools/bash";
 import { editFileTool } from "../tools/file-edit";
 import { readFileTool } from "../tools/file-read";
@@ -49,7 +48,6 @@ Act through tools; don't narrate progress in prose.`,
 		edit_file: editFileTool,
 	},
 	agents: { explorerAgent, coderAgent },
-	inputProcessors: [sessionCompactProcessor],
 	// Applied to every `stream()` / `generate()` call, including those issued by
 	// the `mastra dev` Playground. Per-call options (e.g. CLI's explicit
 	// `maxSteps`) still win, but the Playground has no such override so these

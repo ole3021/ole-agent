@@ -2,17 +2,7 @@ import {
 	formatSkillToolCallSummary,
 	isMastraSkillTool,
 } from "../../util/skill-log-format";
-import type {
-	AgentTodoItem,
-	AgentTodoStatus,
-	DebugState,
-	StreamToggles,
-	TodoStats,
-	TranscriptBlock,
-	TurnStats,
-	UiEvent,
-	UsageState,
-} from "../store/types";
+import type { TranscriptBlock, UiEvent } from "../store/types";
 import { formatTokens } from "./text-utils";
 
 let nextIdCounter = 1;
@@ -34,71 +24,9 @@ const stringifySafe = (value: unknown): string => {
 	}
 };
 
-const toTodoStatus = (raw: string | undefined): AgentTodoStatus => {
-	if (raw === "in_progress") return "in_progress";
-	if (raw === "completed") return "completed";
-	if (raw === "cancelled") return "cancelled";
-	return "pending";
-};
-
-export const parseAgentTodoFromArgs = (
-	args: unknown,
-): { stats: TodoStats; items: AgentTodoItem[] } | undefined => {
-	if (!args || typeof args !== "object") return undefined;
-	const a = args as { items?: unknown; todos?: unknown };
-	const list = Array.isArray(a.items)
-		? a.items
-		: Array.isArray(a.todos)
-			? a.todos
-			: null;
-	if (!list || list.length === 0) return undefined;
-	const items: AgentTodoItem[] = list.map((raw, i) => {
-		const o = raw as {
-			id?: string;
-			content?: string;
-			title?: string;
-			task?: string;
-			status?: string;
-		};
-		const status = toTodoStatus(o.status);
-		const label = String(
-			o.content || o.title || o.task || `任务 ${i + 1}`,
-		).trim();
-		return { id: String(o.id ?? `todo-${i + 1}`), label, status };
-	});
-	const stats: TodoStats = {
-		pending: 0,
-		inProgress: 0,
-		completed: 0,
-		cancelled: 0,
-	};
-	for (const t of items) {
-		if (t.status === "pending") stats.pending += 1;
-		else if (t.status === "in_progress") stats.inProgress += 1;
-		else if (t.status === "completed") stats.completed += 1;
-		else if (t.status === "cancelled") stats.cancelled += 1;
-	}
-	return { stats, items };
-};
-
-export const updateTodoState = (
-	todoStats: TodoStats,
-	agentTodos: AgentTodoItem[],
-	event: UiEvent,
-): { todoStats: TodoStats; agentTodos: AgentTodoItem[] } => {
-	if (event.kind === "tool-call" && event.name === "todo") {
-		const parsed = parseAgentTodoFromArgs(event.args);
-		if (parsed) {
-			return { todoStats: parsed.stats, agentTodos: parsed.items };
-		}
-	}
-	return { todoStats, agentTodos };
-};
-
 export const applyEvent = (
 	blocks: TranscriptBlock[],
 	event: UiEvent,
-	toggles: StreamToggles,
 ): TranscriptBlock[] => {
 	switch (event.kind) {
 		case "turn-start":
@@ -175,10 +103,6 @@ export const applyEvent = (
 					: b,
 			);
 		case "tool-call": {
-			/** 关闭工具行展示时，仍经流以更新侧栏，但不写入转写区 */
-			if (!toggles.toolCall && event.name === "todo") {
-				return blocks;
-			}
 			const newBlock: TranscriptBlock = {
 				id: event.id || nextId("tool"),
 				type: "tool",
@@ -242,57 +166,6 @@ export const applyEvent = (
 		default:
 			return blocks;
 	}
-};
-
-export const updateTurnStats = (
-	turnStats: TurnStats,
-	event: UiEvent,
-): TurnStats => {
-	if (event.kind === "turn-start")
-		return { startAtMs: Date.now(), toolCalls: 0 };
-	if (event.kind === "tool-call")
-		return { ...turnStats, toolCalls: turnStats.toolCalls + 1 };
-	return turnStats;
-};
-
-export const updateDebugState = (
-	debugState: DebugState,
-	event: UiEvent,
-	assistantText: string,
-): DebugState => {
-	if (event.kind === "error")
-		return event.message === "[aborted]" ? "aborted" : "error";
-	if (event.kind === "turn-end") {
-		if (debugState === "running") return assistantText ? "done" : "idle";
-	}
-	return debugState;
-};
-
-export const updateUsage = (usage: UsageState, event: UiEvent): UsageState => {
-	if (event.kind === "usage") {
-		const inTokens = event.inTokens ?? 0;
-		const outTokens = event.outTokens ?? 0;
-		const total = event.totalTokens ?? 0;
-		return { input: inTokens, output: outTokens, total };
-	}
-	return usage;
-};
-
-export const updateTotalUsage = (
-	totalUsage: UsageState,
-	event: UiEvent,
-): UsageState => {
-	if (event.kind === "usage") {
-		const inTokens = event.inTokens ?? 0;
-		const outTokens = event.outTokens ?? 0;
-		const total = event.totalTokens ?? 0;
-		return {
-			input: totalUsage.input + inTokens,
-			output: totalUsage.output + outTokens,
-			total: totalUsage.total + total,
-		};
-	}
-	return totalUsage;
 };
 
 export const resetIdCounter = (): void => {

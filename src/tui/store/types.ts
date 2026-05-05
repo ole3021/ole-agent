@@ -1,9 +1,13 @@
-export type Message = {
-	role: "user" | "assistant";
-	content: string;
-};
+import type {
+	AgentRunEvent,
+	AgentRunScope,
+} from "../../app/session/agent-run-event";
+import type {
+	ExecutionRuntimeState as AppExecutionRuntimeState,
+	ExecutionTimelineEntry as AppExecutionTimelineEntry,
+} from "../../app/session/runtime-state";
 
-export type Scope = "main" | { sub: string };
+export type Scope = AgentRunScope;
 
 export type StreamToggles = {
 	reason: boolean;
@@ -11,31 +15,7 @@ export type StreamToggles = {
 	usage: boolean;
 };
 
-export type UiEvent =
-	| { kind: "turn-start" }
-	| { kind: "text-delta"; scope: Scope; text: string }
-	| { kind: "reasoning-start"; scope: Scope; id: string }
-	| { kind: "reasoning-delta"; scope: Scope; id: string; text: string }
-	| { kind: "reasoning-end"; scope: Scope; id: string }
-	| { kind: "tool-call"; scope: Scope; id: string; name: string; args: unknown }
-	| {
-			kind: "tool-result";
-			scope: Scope;
-			id: string;
-			name: string;
-			ok: boolean;
-			preview?: string;
-	  }
-	| { kind: "subagent-start"; id: string }
-	| { kind: "subagent-end"; id: string; ok: boolean; error?: string }
-	| {
-			kind: "usage";
-			inTokens?: number;
-			outTokens?: number;
-			totalTokens?: number;
-	  }
-	| { kind: "error"; message: string }
-	| { kind: "turn-end"; assistantText: string };
+export type UiEvent = AgentRunEvent;
 
 export type TranscriptBlock =
 	| { id: string; type: "user"; text: string }
@@ -79,14 +59,7 @@ export type UsageState = {
 	total: number;
 };
 
-export type TodoStats = {
-	pending: number;
-	inProgress: number;
-	completed: number;
-	cancelled: number;
-};
-
-/** 来自 `todo` 工具列表项（与 stream-processors 中解析的 status 一致） */
+/** 来自 `todo` 工具列表项（与 runtime-reducer 中解析的 status 一致） */
 export type AgentTodoStatus =
 	| "pending"
 	| "in_progress"
@@ -105,6 +78,10 @@ export type TurnStats = {
 	startAtMs: number | null;
 	toolCalls: number;
 };
+
+export type ExecutionRuntimeState = AppExecutionRuntimeState;
+
+export type ExecutionTimelineEntry = AppExecutionTimelineEntry;
 
 export interface Command {
 	id: string;

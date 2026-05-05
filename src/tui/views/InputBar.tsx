@@ -1,5 +1,6 @@
 /** @jsxImportSource @opentui/react */
 import type { KeyEvent } from "@opentui/core";
+import { StreamingLineIndicator } from "../components/StreamingLineIndicator";
 import { tuiColors } from "../theme/colors";
 
 type Props = {
@@ -50,6 +51,17 @@ export const InputBar = ({
 				onSubmit={onSubmitOpenTui}
 				style={{ flexGrow: 1, minWidth: 0 }}
 			/>
+			{isStreaming ? (
+				<box
+					alignItems="center"
+					flexShrink={0}
+					justifyContent="center"
+					paddingLeft={1}
+					paddingRight={1}
+				>
+					<StreamingLineIndicator isStreaming />
+				</box>
+			) : null}
 		</box>
 	);
 };

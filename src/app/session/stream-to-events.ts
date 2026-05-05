@@ -3,26 +3,42 @@ import {
 	formatSkillToolResultPreview,
 	isMastraSkillTool,
 } from "../../util/skill-log-format";
-import type { Scope, StreamToggles, UiEvent } from "../store/types";
-import { previewTextFromUnknown } from "./text-utils";
+import type { AgentRunEvent, AgentRunScope } from "./agent-run-event";
 
 type FullStreamChunk = {
 	type: string;
 	payload?: unknown;
 };
 
+export type StreamToggles = {
+	reason: boolean;
+	toolCall: boolean;
+	usage: boolean;
+};
+
 const SUBAGENT_TOOL_PREFIX = "agent-";
 
-export { formatTokens } from "./text-utils";
+const previewTextFromUnknown = (value: unknown): string => {
+	if (value === undefined || value === null) {
+		return "";
+	}
+	if (typeof value === "string") {
+		return value;
+	}
+	try {
+		return JSON.stringify(value);
+	} catch {
+		return String(value);
+	}
+};
 
-const scopeFromSub = (subId?: string): Scope =>
+const scopeFromSub = (subId?: string): AgentRunScope =>
 	subId ? { sub: subId } : "main";
 
-export async function* streamToEvents(
+export async function* streamToAgentRunEvents(
 	stream: MastraModelOutput<unknown>,
-	toggles: StreamToggles,
 	signal?: AbortSignal,
-): AsyncGenerator<UiEvent> {
+): AsyncGenerator<AgentRunEvent> {
 	const reader = stream.fullStream.getReader();
 	if (signal) {
 		const onAbort = () => {
@@ -41,14 +57,11 @@ export async function* streamToEvents(
 
 	const emitChunk = function* (
 		chunk: FullStreamChunk,
-		scope: Scope,
+		scope: AgentRunScope,
 		countsTowardAssistant: boolean,
-	): Generator<UiEvent> {
+	): Generator<AgentRunEvent> {
 		switch (chunk.type) {
 			case "reasoning-start": {
-				if (!toggles.reason) {
-					break;
-				}
 				const id = String(
 					(chunk.payload as { id?: string } | undefined)?.id ?? "",
 				);
@@ -59,9 +72,6 @@ export async function* streamToEvents(
 				break;
 			}
 			case "reasoning-delta": {
-				if (!toggles.reason) {
-					break;
-				}
 				const payload = chunk.payload as
 					| { id?: string; text?: string }
 					| undefined;
@@ -73,9 +83,6 @@ export async function* streamToEvents(
 				break;
 			}
 			case "reasoning-end": {
-				if (!toggles.reason) {
-					break;
-				}
 				const id = String(
 					(chunk.payload as { id?: string } | undefined)?.id ?? "",
 				);
@@ -90,14 +97,6 @@ export async function* streamToEvents(
 					| { toolName?: string; args?: unknown; toolCallId?: string }
 					| undefined;
 				const toolName = String(payload?.toolName ?? "?");
-				/** `todo` 与 Mastra `skill*` 需始终经流（待办归约 / skill 摘要展示）；其它工具受 `toggles.toolCall` 控制 */
-				if (
-					!toggles.toolCall &&
-					toolName !== "todo" &&
-					!isMastraSkillTool(toolName)
-				) {
-					break;
-				}
 				yield {
 					kind: "tool-call",
 					scope,
@@ -112,9 +111,6 @@ export async function* streamToEvents(
 					| { toolName?: string; toolCallId?: string; result?: unknown }
 					| undefined;
 				const toolName = String(payload?.toolName ?? "?");
-				if (!toggles.toolCall && !isMastraSkillTool(toolName)) {
-					break;
-				}
 				const res = payload?.result;
 				const preview =
 					res !== undefined && res !== null
@@ -137,18 +133,16 @@ export async function* streamToEvents(
 					| { toolName?: string; toolCallId?: string; error?: unknown }
 					| undefined;
 				const tn = String(payload?.toolName ?? "?");
-				if (toggles.toolCall || isMastraSkillTool(tn)) {
-					yield {
-						kind: "tool-result",
-						scope,
-						id: String(payload?.toolCallId ?? payload?.toolName ?? ""),
-						name: tn,
-						ok: false,
-						preview: previewTextFromUnknown(
-							payload?.error ?? "Unknown tool error",
-						),
-					};
-				}
+				yield {
+					kind: "tool-result",
+					scope,
+					id: String(payload?.toolCallId ?? payload?.toolName ?? ""),
+					name: tn,
+					ok: false,
+					preview: previewTextFromUnknown(
+						payload?.error ?? "Unknown tool error",
+					),
+				};
 				yield {
 					kind: "error",
 					message: `tool: ${String(payload?.toolName ?? "?")} >> ${previewTextFromUnknown(payload?.error ?? "Unknown tool error")}`,
@@ -246,7 +240,6 @@ export async function* streamToEvents(
 		}
 	}
 
-	/** 中止后不再 await stream.text/usage，避免挂起与多余请求 */
 	if (signal?.aborted) {
 		return;
 	}
@@ -257,15 +250,36 @@ export async function* streamToEvents(
 		yield { kind: "text-delta", scope: "main", text: finalText };
 	}
 
-	if (toggles.usage) {
-		const usage = await stream.usage;
-		yield {
-			kind: "usage",
-			inTokens: usage.inputTokens,
-			outTokens: usage.outputTokens,
-			totalTokens: usage.totalTokens,
-		};
-	}
+	const usage = await stream.usage;
+	yield {
+		kind: "usage",
+		inTokens: usage.inputTokens,
+		outTokens: usage.outputTokens,
+		totalTokens: usage.totalTokens,
+	};
 
 	yield { kind: "turn-end", assistantText };
+}
+
+export function isAgentRunEventVisible(
+	event: AgentRunEvent,
+	toggles: StreamToggles,
+): boolean {
+	if (
+		event.kind === "reasoning-start" ||
+		event.kind === "reasoning-delta" ||
+		event.kind === "reasoning-end"
+	) {
+		return toggles.reason;
+	}
+	if (event.kind === "usage") {
+		return toggles.usage;
+	}
+	if (event.kind === "tool-call" || event.kind === "tool-result") {
+		if (event.name === "todo" || isMastraSkillTool(event.name)) {
+			return true;
+		}
+		return toggles.toolCall;
+	}
+	return true;
 }

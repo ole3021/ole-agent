@@ -2,10 +2,13 @@
 import type { MouseEvent } from "@opentui/core";
 import type { ReactNode } from "react";
 import { useCallback } from "react";
-import { StreamingLineIndicator } from "../components/StreamingLineIndicator";
-import { flattenTranscriptVisibleStyled } from "../lib/text-utils";
+import {
+	formatUsageStateLine,
+	flattenTranscriptVisibleStyled,
+	truncateText,
+} from "../lib/text-utils";
 import { getTranscriptBodyScrollRows } from "../lib/transcript-layout";
-import type { TranscriptBlock } from "../store/types";
+import type { TranscriptBlock, UsageState } from "../store/types";
 import { tuiColors } from "../theme/colors";
 
 type Props = {
@@ -14,7 +17,8 @@ type Props = {
 	maxScrollOffset: number;
 	textCols: number;
 	height: number;
-	isStreaming: boolean;
+	/** 累计会话 token（入 / 出 / 计），显示在底栏最左侧 */
+	totalUsage: UsageState;
 	scrollUp: (lines?: number) => void;
 	scrollDown: (lines?: number) => void;
 };
@@ -43,7 +47,7 @@ export const TranscriptView = ({
 	maxScrollOffset,
 	textCols,
 	height,
-	isStreaming,
+	totalUsage,
 	scrollUp,
 	scrollDown,
 }: Props) => {
@@ -111,25 +115,36 @@ export const TranscriptView = ({
 	);
 
 	const leftMax = Math.max(8, w - 12);
-	const leftStatusText = showEmpty
-		? EMPTY_HINT.slice(0, leftMax)
-		: !isAtBottom && maxScrollOffset > 0
-			? NOT_AT_BOTTOM_HINT.slice(0, leftMax)
-			: " ";
-	const streamLine = isStreaming ? (
-		<StreamingLineIndicator isStreaming />
-	) : null;
+	const sessionUsageLine = formatUsageStateLine(totalUsage);
+	const leftStatusText = (() => {
+		let line = sessionUsageLine;
+		if (showEmpty) {
+			const combined = `${sessionUsageLine}  ${EMPTY_HINT}`;
+			line =
+				combined.length <= leftMax
+					? combined
+					: truncateText(combined, leftMax).text;
+		} else if (!isAtBottom && maxScrollOffset > 0 && NOT_AT_BOTTOM_HINT) {
+			const combined = `${sessionUsageLine}  ${NOT_AT_BOTTOM_HINT}`;
+			line =
+				combined.length <= leftMax
+					? combined
+					: truncateText(combined, leftMax).text;
+		} else {
+			line = truncateText(sessionUsageLine, leftMax).text;
+		}
+		return line;
+	})();
 	const bottomStatusRow = (
 		<box flexDirection="row" flexShrink={0} justifyContent="space-between">
 			<box
 				alignItems="center"
 				flexDirection="row"
-				flexGrow={0}
+				flexGrow={1}
 				flexShrink={1}
 				gap={1}
 				minWidth={0}
 			>
-				{streamLine}
 				<text fg={tuiColors.muted} flexShrink={1}>
 					{leftStatusText}
 				</text>
@@ -172,24 +187,14 @@ export const TranscriptView = ({
 
 	const shortStatusRow = (
 		<box flexDirection="row" flexShrink={0} justifyContent="space-between">
-			<box
-				alignItems="center"
-				flexDirection="row"
-				flexGrow={0}
-				flexShrink={1}
-				gap={1}
-				minWidth={0}
-			>
-				{streamLine}
-				<text flexShrink={0} fg={tuiColors.muted}>
-					{scrollLabel}
+			<box flexGrow={1} flexShrink={1} minWidth={0}>
+				<text fg={tuiColors.muted} flexShrink={1}>
+					{leftStatusText}
 				</text>
 			</box>
-			{!isAtBottom && maxScrollOffset > 0 ? (
-				<text flexShrink={0} fg={tuiColors.muted}>
-					{NOT_AT_BOTTOM_HINT.slice(0, leftMax)}
-				</text>
-			) : null}
+			<text flexShrink={0} fg={tuiColors.muted}>
+				{scrollLabel}
+			</text>
 		</box>
 	);
 

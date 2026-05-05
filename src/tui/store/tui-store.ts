@@ -1,16 +1,18 @@
 import { create } from "zustand";
+import { createEmptyExecutionRuntimeState } from "../../app/session/runtime-state";
+import type { UserTranscriptMessage } from "../../types/message";
 import { Envs } from "../../util/env";
 import {
 	resetAgentSessionContext,
 	runAgentTurn,
 } from "../services/agent-turn.service";
-import type { UserTranscriptMessage } from "../../types/message";
 import type {
 	AgentTodoItem,
 	Command,
 	DebugState,
+	ExecutionRuntimeState,
+	ExecutionTimelineEntry,
 	StreamToggles,
-	TodoStats,
 	TranscriptBlock,
 	TurnStats,
 	UsageState,
@@ -23,10 +25,8 @@ export type {
 	AgentTodoStatus,
 	Command,
 	DebugState,
-	Message,
 	Scope,
 	StreamToggles,
-	TodoStats,
 	TranscriptBlock,
 	TurnStats,
 	UiEvent,
@@ -50,10 +50,12 @@ export interface TuiState {
 	totalUsage: UsageState;
 	/** 本轮 agent 回合状态（起始时间、工具调用次数等） */
 	turnStats: TurnStats;
-	/** 待办事项/自动流程的统计摘要（进行中、已完成等） */
-	todoStats: TodoStats;
 	/** 当前「todo」工具写回的任务项（侧栏） */
 	agentTodos: AgentTodoItem[];
+	/** 当前回合中的执行状态摘要（thinking/子代理/最近工具） */
+	executionRuntime: ExecutionRuntimeState;
+	/** 最近关键执行事件时间线（常驻） */
+	executionTimeline: ExecutionTimelineEntry[];
 	/** 各类流/显示开关（Reason/toolCall/usage） */
 	toggles: StreamToggles;
 	/** 当前 query 输入框内容 */
@@ -111,8 +113,9 @@ export const useTuiStore = create<TuiStore>((set, get) => ({
 	usage: { input: 0, output: 0, total: 0 },
 	totalUsage: { input: 0, output: 0, total: 0 },
 	turnStats: { startAtMs: null, toolCalls: 0 },
-	todoStats: { pending: 0, inProgress: 0, completed: 0, cancelled: 0 },
 	agentTodos: [],
+	executionRuntime: createEmptyExecutionRuntimeState(),
+	executionTimeline: [],
 	toggles: {
 		reason: Envs.CLI_REASON,
 		toolCall: Envs.CLI_TOOL_CALL,
@@ -192,8 +195,9 @@ export const useTuiStore = create<TuiStore>((set, get) => ({
 			turnStats: { startAtMs: Date.now(), toolCalls: 0 },
 			usage: { input: 0, output: 0, total: 0 },
 			globalError: null,
-			todoStats: { pending: 0, inProgress: 0, completed: 0, cancelled: 0 },
 			agentTodos: [],
+			executionRuntime: createEmptyExecutionRuntimeState(),
+			executionTimeline: [],
 		}));
 
 		const abortController = new AbortController();
@@ -204,7 +208,11 @@ export const useTuiStore = create<TuiStore>((set, get) => ({
 			{ id: userId, type: "user", text: rawQuery },
 		];
 		const totalUsageStart = get().totalUsage;
-		const { todoStats: todoStatsStart, agentTodos: agentTodosStart } = get();
+		const {
+			agentTodos: agentTodosStart,
+			executionRuntime: executionRuntimeStart,
+			executionTimeline: executionTimelineStart,
+		} = get();
 
 		try {
 			await runAgentTurn({
@@ -213,8 +221,9 @@ export const useTuiStore = create<TuiStore>((set, get) => ({
 				toggles,
 				initialBlocks,
 				totalUsage: totalUsageStart,
-				todoStats: todoStatsStart,
 				agentTodos: agentTodosStart,
+				executionRuntime: executionRuntimeStart,
+				executionTimeline: executionTimelineStart,
 				signal: abortController.signal,
 				onProgress: (p) =>
 					set((state) => {
@@ -241,8 +250,9 @@ export const useTuiStore = create<TuiStore>((set, get) => ({
 			debugState: "idle",
 			usage: { input: 0, output: 0, total: 0 },
 			totalUsage: { input: 0, output: 0, total: 0 },
-			todoStats: { pending: 0, inProgress: 0, completed: 0, cancelled: 0 },
 			agentTodos: [],
+			executionRuntime: createEmptyExecutionRuntimeState(),
+			executionTimeline: [],
 		}));
 	},
 
@@ -258,10 +268,5 @@ export const usePaletteOpen = () => useTuiStore((s) => s.paletteOpen);
 export const useCommands = () => useTuiStore((s) => s.commands);
 export const useToggles = () => useTuiStore((s) => s.toggles);
 export const useTotalUsage = () => useTuiStore((s) => s.totalUsage);
-export const useTurnUsage = () => useTuiStore((s) => s.usage);
-export const useTurnStats = () => useTuiStore((s) => s.turnStats);
-export const useTodoStats = () => useTuiStore((s) => s.todoStats);
-export const useAgentTodos = () => useTuiStore((s) => s.agentTodos);
-export const useElapsedSec = () => useTuiStore((s) => s.elapsedSec);
 export const useTerminalSize = () =>
 	useTuiStore((s) => ({ cols: s.cols, rows: s.rows }));
